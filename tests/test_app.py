@@ -81,3 +81,9 @@ def test_leaderboard_order(client):
     assert response.json[0]["artist"] == "arij"
     assert response.json[1]["artist"] == "nour"
 
+def test_visit_metric(client):
+    mid = new_museum(client)
+    client.post("/visits", json={"visitor": "nour", "museum_id": mid})
+    body = client.get("/metrics").data.decode()
+    assert 'museum_visits_total{museum="Pixel Dreams"}' in body
+
