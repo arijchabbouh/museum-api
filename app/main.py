@@ -1,8 +1,38 @@
+import logging
+import time
 import uuid
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
+from pythonjsonlogger.json import JsonFormatter
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+logger = logging.getLogger("museum-api")
+logger.handlers = [handler]
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 app = Flask(__name__)
+@app.before_request
+def start_timer():
+    g.start = time.perf_counter()
+
+@app.after_request
+def log_request(response):
+    duration = time.perf_counter() - g.start
+    logger.info("request", extra={
+        "method": request.method, "path": request.path,
+        "status": response.status_code, "duration_ms": round(duration * 1000, 2),
+    })
+    return response
+
+@app.errorhandler(Exception)
+def handle_error(exc):
+    if getattr(exc, "code", None):
+        return jsonify(error=exc.name.lower()), exc.code
+    logger.error("unhandled_error", exc_info=exc, extra={"path": request.path})
+    return jsonify(error="internal server error"), 500
+
 museums = {}
 visits = []
 POINTS_PER_VISIT = 10
