@@ -4,6 +4,8 @@ import uuid
 
 from flask import Flask, g, jsonify, request
 from pythonjsonlogger.json import JsonFormatter
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+
 
 handler = logging.StreamHandler()
 handler.setFormatter(JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
@@ -13,6 +15,9 @@ logger.setLevel(logging.INFO)
 logger.propagate = False
 
 app = Flask(__name__)
+REQUESTS = Counter("http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"])
+LATENCY = Histogram("http_request_duration_seconds", "Request latency", ["method", "endpoint"])
+VISITS = Counter("museum_visits_total", "Visits logged", ["museum"])
 @app.before_request
 def start_timer():
     g.start = time.perf_counter()
@@ -20,10 +25,14 @@ def start_timer():
 @app.after_request
 def log_request(response):
     duration = time.perf_counter() - g.start
-    logger.info("request", extra={
-        "method": request.method, "path": request.path,
-        "status": response.status_code, "duration_ms": round(duration * 1000, 2),
-    })
+    endpoint = request.url_rule.rule if request.url_rule else "unmatched"
+    REQUESTS.labels(request.method, endpoint, response.status_code).inc()
+    LATENCY.labels(request.method, endpoint).observe(duration)
+    if endpoint != "/metrics":
+        logger.info("request", extra={
+            "method": request.method, "path": request.path,
+            "status": response.status_code, "duration_ms": round(duration * 1000, 2),
+        })
     return response
 
 @app.errorhandler(Exception)
@@ -62,6 +71,7 @@ def create_museum():
         return jsonify(error="'name', 'theme' and 'artist' are required"), 400
     museum = {"id": str(uuid.uuid4()), "name": name, "theme": theme, "artist": artist}
     museums[museum["id"]] = museum
+    VISITS.labels(museum["name"]).inc()
     return jsonify(museum), 201
 
 
@@ -112,6 +122,9 @@ def leaderboard():
     board = sorted((artist_profile(n) for n in names), key=lambda p: p["points"], reverse=True)
     return jsonify(board[:10])
 
+@app.get("/metrics")
+def metrics():
+    return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
