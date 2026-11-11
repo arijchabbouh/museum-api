@@ -47,10 +47,8 @@ def log_request(response):
     REQUESTS.labels(request.method, endpoint, response.status_code).inc()
     LATENCY.labels(request.method, endpoint).observe(duration)
     if endpoint != "/metrics":
-        logger.info("request", extra={
-            "method": request.method, "path": request.path,
-            "status": response.status_code, "duration_ms": round(duration * 1000, 2),
-        })
+        logger.info("request", extra={"trace_id": trace_id(), "method": request.method, "path": request.path,
+                    "status": response.status_code, "duration_ms": round(duration * 1000, 2) })
     return response
 
 @app.errorhandler(Exception)
@@ -89,22 +87,18 @@ def create_museum():
         return jsonify(error="'name', 'theme' and 'artist' are required"), 400
     museum = {"id": str(uuid.uuid4()), "name": name, "theme": theme, "artist": artist}
     museums[museum["id"]] = museum
-    VISITS.labels(museum["name"]).inc()
     return jsonify(museum), 201
 
 
 @app.get("/museums/<museum_id>")
 def get_museum(museum_id):
     museum = museums.get(museum_id)
-    if museum is None:
-        return jsonify(error="museum not found"), 404
-    return jsonify(museum)
+    return (jsonify(museum), 200) if museum else (jsonify(error="museum not found"), 404)
 
 
 @app.get("/artists/<artist>/museums")
 def get_museums_by_artist(artist):
-    own = [m for m in museums.values() if m["artist"].lower() == artist.lower()]
-    return jsonify(own)
+    return jsonify([m for m in museums.values() if m["artist"].lower() == artist.lower()])
 
 
 @app.post("/visits")
@@ -121,6 +115,7 @@ def create_visit():
         span.set_attribute("museum.id", museum["id"])
         visit = {"visitor": visitor, "museum_id": museum["id"], "artist": museum["artist"], "points": points}
         visits.append(visit) 
+    VISITS.labels(museum["name"]).inc()
     return jsonify(visit), 201
 
 
@@ -150,6 +145,3 @@ def metrics():
 def trace_id():
     ctx = trace.get_current_span().get_span_context()
     return format(ctx.trace_id, "032x") if ctx.is_valid else ""
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
