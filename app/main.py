@@ -49,7 +49,7 @@ def log_request(response):
     if endpoint not in ("/metrics", "/health"):
         logger.info("request", extra={"trace_id": trace_id(), "method": request.method, "path": request.path,
                     "status": response.status_code, "duration_ms": round(duration * 1000, 2) })
-    response.headers.update({"Cross-Origin-Resource-Policy": "same-origin", "Cache-Control": "no-store"})
+    response.headers.update({"Cross-Origin-Resource-Policy": "same-origin", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
     return response
 
 @app.errorhandler(Exception)
