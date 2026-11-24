@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        run: python -m pytest -v --cov=app --cov-report=term-missing
+
+      - name: Check backend size (< 150 lines)
+        run: test "$(wc -l < app/main.py)" -lt 150
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Bandit report (saved as artifact)
+        run: bandit -r app -f txt -o bandit-report.txt || true
+
+      - name: Bandit check (fails on medium/high issues)
+        run: bandit -r app -ll
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.txt
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, sast]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t museum-api:ci .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: museum-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: table
+          output: trivy-report.txt
+
+      - name: Show Trivy report
+        run: cat trivy-report.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.txt
