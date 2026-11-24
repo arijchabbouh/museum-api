@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        run: python -m pytest -v --cov=app --cov-report=term-missing
+
+      - name: Check backend size (< 150 lines)
+        run: test "$(wc -l < app/main.py)" -lt 150
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Bandit report (saved as artifact)
+        run: bandit -r app -f txt -o bandit-report.txt || true
+
+      - name: Bandit check (fails on medium/high issues)
+        run: bandit -r app -ll
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.txt
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, sast]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t museum-api:ci .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: museum-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: table
+          output: trivy-report.txt
+
+      - name: Show Trivy report
+        run: cat trivy-report.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+
+  push:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        run: |
+          IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/museum-api
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+  deploy-dast:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t museum-api:ci .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: museum
+
+      - name: Load image into kind
+        run: kind load docker-image museum-api:ci --name museum
+
+      - name: Deploy to Kubernetes
+        run: |
+          sed -i "s|arijengineer/museum-api:1.0|museum-api:ci|" k8s/deployment.yaml
+          kubectl apply -f k8s/
+          kubectl rollout status deployment/museum-api --timeout=120s
+          kubectl get pods,svc
+
+      - name: Smoke test
+        run: |
+          kubectl port-forward svc/museum-api 8080:80 > /dev/null 2>&1 &
+          sleep 5
+          curl -fsS http://localhost:8080/health
+          curl -fsS -X POST http://localhost:8080/museums -H "Content-Type: application/json" -d '{"name":"Pixel Dreams","theme":"retro","artist":"arij"}'
+          curl -fsS http://localhost:8080/leaderboard
+
+      - name: DAST with OWASP ZAP
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://localhost:8080/museums -r zap-report.html -I
+
+      - name: Save pod logs
+        if: always()
+        run: kubectl logs deployment/museum-api --tail=100 > zap/pod-logs.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dast-report
+          path: zap/

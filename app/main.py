@@ -46,9 +46,10 @@ def log_request(response):
     endpoint = request.url_rule.rule if request.url_rule else "unmatched"
     REQUESTS.labels(request.method, endpoint, response.status_code).inc()
     LATENCY.labels(request.method, endpoint).observe(duration)
-    if endpoint != "/metrics":
+    if endpoint not in ("/metrics", "/health"):
         logger.info("request", extra={"trace_id": trace_id(), "method": request.method, "path": request.path,
                     "status": response.status_code, "duration_ms": round(duration * 1000, 2) })
+    response.headers.update({"Cross-Origin-Resource-Policy": "same-origin", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
     return response
 
 @app.errorhandler(Exception)
