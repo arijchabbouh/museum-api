@@ -58,7 +58,7 @@ jobs:
         run: docker build -t museum-api:ci .
 
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: museum-api:ci
           severity: CRITICAL,HIGH
